@@ -1,0 +1,595 @@
+substitutions:
+  name: fve-victron-mppt-vjv
+  friendly_name: FVE Victron MPPT VJV
+  name_shunt: fve-victron-shunt
+  name_shunt_friendly_name: FVE Victron SmartShunt
+  name_tac: fve-tac1100-elm
+  name_tac_friendly_name: FVE TAC1100 Elmer
+  device_description: "Monitor and manage Victron SmartSolar 150/100 via UART-TTL HEX protocol"
+  mqtt_prefix: "plc-fve/mppt-vjv"
+  shunt_prefix: "plc-fve/smartshunt"
+  tac_prefix: "plc-fve/fve-pwr-mtr"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -10
+    then:
+      - script.execute: watchdog
+
+esp32:
+  board: esp-wrover-kit
+  framework:
+      type: esp-idf
+      version: recommended
+  
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk_mode: GPIO0_IN
+  phy_addr: 1
+  power_pin: GPIO16
+  domain: ''
+  
+  manual_ip:
+    static_ip: 10.0.0.53
+    gateway: 10.0.0.2
+    subnet: 255.255.255.0
+  #use_address: 10.0.0.61 
+
+# Enable logging
+logger:
+  level: INFO
+  baud_rate: 0
+
+api:
+  reboot_timeout: 0s
+  
+ota:
+  - platform: esphome
+    password: "passwd" 
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+globals:
+  - id: last_update_inv
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: last_update_pv
+    type: int
+    restore_value: no
+    initial_value: "0"
+
+  - id: last_inv_value
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+  - id: last_pv_value
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: last_update_batt_chrgcurr
+    type: int
+    restore_value: no
+    initial_value: "0"
+  - id: last_batt_chrgcurr_value
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  - id: charge_current_limit_value
+    type: float
+    restore_value: no
+    initial_value: "30.0"  # Default fallback value
+
+  - id: last_mppt_max_curr
+    type: float
+    restore_value: no
+    initial_value: "100.0"  # Start with default
+
+mqtt:
+  broker: 10.0.0.106
+  username: esphome
+  password: !secret mqtt_passwd
+  topic_prefix: ${mqtt_prefix}
+  on_connect:
+    then:
+      - delay: 2s  
+      - script.execute: publish_homeassistant_discovery
+
+uart:
+  - id: uart_mppt
+    tx_pin: GPIO1 #4 #17
+    rx_pin: GPIO3 #14 #5
+    baud_rate: 19200
+    rx_buffer_size: 256
+
+  - id: uart_shunt
+    tx_pin: GPIO17 #4 #17
+    rx_pin: GPIO5 #14 #5
+    baud_rate: 19200
+    rx_buffer_size: 256
+
+  - id: uart_modbus
+    tx_pin: GPIO4
+    rx_pin: GPIO14
+    baud_rate: 9600
+    stop_bits: 1
+
+# VE Direct Hex external component
+ve_direct_hex:
+  - id: ve_direct_hex_0
+    uart_id: uart_mppt
+    update_interval: 1000ms
+  - id: ve_direct_hex_1
+    uart_id: uart_shunt
+    update_interval: 1000ms
+    initial_delay: 500ms
+
+# MODBUS for TAC1100 meter
+modbus:
+  id: modbus1
+  uart_id: uart_modbus
+  send_wait_time: 200ms
+
+modbus_controller:
+  - id: tac1100
+    address: 0x01
+    modbus_id: modbus1
+    command_throttle: 20ms
+    setup_priority: -10
+    update_interval: 500ms
+
+sensor:
+  # Sensors for MPPT Victron
+  - platform: ve_direct_hex
+    ve_direct_hex_id: ve_direct_hex_0
+    panel_voltage:
+      name: "panel_voltage"
+      state_topic: "${mqtt_prefix}/pvarrayvoltage"
+      filters:
+        - delta: 0.1  # Only publish when value changes by at least 0.1    
+    panel_current:
+      name: "panel_current"
+      state_topic: "${mqtt_prefix}/pvarraycurrent"
+      filters:
+        - delta: 0.1  # Only publish when value changes by at least 0.1
+    panel_power:
+      name: "panel_power"
+      state_topic: "${mqtt_prefix}/pvarraypower"
+      filters:
+        - delta: 0.1
+    battery_voltage:
+      name: "battery_voltage"
+      id: battery_voltage
+      state_topic: "${mqtt_prefix}/batteryvoltage"
+      filters:
+        - delta: 0.01
+    battery_current:
+      name: "battery_current"
+      state_topic: "${mqtt_prefix}/batterycurrent"
+      filters:
+        - delta: 0.1
+    device_state_id:
+      name: "device_state_id"
+      state_topic: "${mqtt_prefix}/devicestateid"
+      filters:
+        - delta: 1.0
+    network_mode_id:
+      name: "network_mode_id"
+      state_topic: "${mqtt_prefix}/networkmodeid"
+      filters:
+        - delta: 1.0
+
+  # Sensors for SmartShunt
+  - platform: ve_direct_hex
+    ve_direct_hex_id: ve_direct_hex_1
+    main_battery_voltage:
+      name: "main_battery_voltage"
+      id: main_battery_voltage
+      #state_topic: "${shunt_prefix}/mainbatteryvoltage"
+      internal: true
+      filters:
+        - delta: 0.01
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "${shunt_prefix}/mainbatteryvoltage"
+              payload: !lambda |-
+                char buffer[10];
+                snprintf(buffer, sizeof(buffer), "%.2f", x);
+                return std::string(buffer);        
+    main_battery_current:
+      name: "main_battery_current"
+      id: main_battery_current
+      #state_topic: "${shunt_prefix}/mainbatterycurrent"
+      internal: true
+      filters:
+        - delta: 0.1
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "${shunt_prefix}/mainbatterycurrent"
+              payload: !lambda |-
+                char buffer[10];
+                snprintf(buffer, sizeof(buffer), "%.1f", x);
+                return std::string(buffer);      
+          - lambda: |-
+              id(last_update_batt_chrgcurr) = millis();
+              id(last_batt_chrgcurr_value) = x;
+              //ESP_LOGI("cust_mqtt", "MQTT update of: %.2f", x);
+
+
+    main_battery_power:
+      name: "main_battery_power"
+      #state_topic: "${shunt_prefix}/mainbatterypower"
+      internal: true
+      filters:
+       - delta: 1
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "${shunt_prefix}/mainbatterypower"
+              payload: !lambda |-
+                char buffer[10];
+                snprintf(buffer, sizeof(buffer), "%.0f", x);
+                return std::string(buffer);
+    main_battery_soc:
+      name: "main_battery_soc"
+      #state_topic: "${shunt_prefix}/mainbatterysoc"
+      internal: true
+      filters:
+        - delta: 0.01
+      on_value:
+        then:
+          - mqtt.publish:
+              topic: "${shunt_prefix}/mainbatterysoc"
+              payload: !lambda |-
+                char buffer[10];
+                snprintf(buffer, sizeof(buffer), "%.2f", x);
+                return std::string(buffer);  
+
+  # Sensors for TAC1100 electricit meter
+  - platform: modbus_controller
+    modbus_controller_id: tac1100
+    id: voltage
+    name: "Voltage"
+    address: 0x0000
+    unit_of_measurement: "V"
+    value_type: FP32
+    accuracy_decimals: 2
+    register_count: 2
+    register_type: read
+    internal: true
+    filters:
+      - delta: 0.1
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "${tac_prefix}/actualvoltage"
+            payload: !lambda |-
+              char buffer[10];
+              snprintf(buffer, sizeof(buffer), "%.1f", x);
+              return std::string(buffer);
+           
+  - platform: modbus_controller
+    modbus_controller_id: tac1100
+    id: current
+    name: "Current"
+    address: 0x0006
+    unit_of_measurement: "A"
+    value_type: FP32
+    accuracy_decimals: 3
+    register_count: 2
+    register_type: read
+    internal: true
+    filters:
+      - delta: 0.01
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "${tac_prefix}/actualcurrent"
+            payload: !lambda |-
+              char buffer[10];
+              snprintf(buffer, sizeof(buffer), "%.2f", x);
+              return std::string(buffer);
+
+  - platform: modbus_controller
+    modbus_controller_id: tac1100
+    id: activePower
+    name: "Active Power"
+    address: 0x000C
+    unit_of_measurement: "W"
+    value_type: FP32
+    accuracy_decimals: 3
+    register_count: 2
+    register_type: read
+    internal: true
+    filters:
+      - delta: 0.005
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: "${tac_prefix}/activepower"
+            payload: !lambda |-
+              char buffer[10];
+              snprintf(buffer, sizeof(buffer), "%.1f", x);
+              return std::string(buffer);
+  
+  # MQTT sensors
+  - platform: mqtt_subscribe
+    name: "Inverter Output Active Power"
+    id: inv_out_act_pwr
+    topic: "plc-fve/smh-2/acoutputactivepower"
+    internal: True
+    on_value:
+      then:
+        - lambda: |-
+            id(last_update_inv) = millis();
+            id(last_inv_value) = x;
+            //ESP_LOGI("cust_mqtt", "MQTT update of: %.2f", x);
+  - platform: mqtt_subscribe
+    name: "Inverter Panel Power"
+    id: inv_pv_pwr
+    topic: "plc-fve/smh-2/pvchargingpower"
+    internal: True
+    on_value:
+      then:
+        - lambda: |-
+            id(last_update_pv) = millis();
+            id(last_pv_value) = x;
+            //ESP_LOGI("cust_mqtt", "MQTT update of: %.2f", x);
+  - platform: mqtt_subscribe
+    name: "JK BMS Charge Current"
+    id: jkbms_charge_curr
+    topic: "plc-fve/bms-b/totalcurrent"
+    internal: True
+#    on_value:
+#      then:
+#        - lambda: |-
+#            id(last_update_batt_chrgcurr) = millis();
+#            id(last_batt_chrgcurr_value) = x;
+#            //ESP_LOGI("cust_mqtt", "MQTT update of: %.2f", x);
+
+text_sensor:
+  - platform: ve_direct_hex
+    ve_direct_hex_id: ve_direct_hex_0
+    device_state:
+      name: "device_state"
+      id: device_state
+      state_topic: "${mqtt_prefix}/devicestate"
+#      filters:
+#        lambda: |-
+#          static std::string last_value = "";
+#          if (last_value != id(device_state).state) {
+#            last_value = id(device_state).state;
+#           return id(device_state).state;
+#          } else {
+#            return {}; // Prevent publishing the same value
+#          }
+    network_mode:
+      name: "network_mode"
+      id: network_mode
+      state_topic: "${mqtt_prefix}/networkmode"
+#      filters:
+#        lambda: |-
+#          static std::string last_value = "";
+#          if (last_value != id(network_mode).state) {
+#            last_value = id(network_mode).state;
+#            return id(network_mode).state;
+#          } else {
+#            return {}; // Prevent publishing the same value
+#          }
+number:
+  - platform: ve_direct_hex
+    ve_direct_hex_id: ve_direct_hex_0
+
+    charge_current_limit:
+      name: "charge_current_limit"
+      id: charge_current_limit
+      state_topic: "${mqtt_prefix}/chargecurrentlimit"
+      command_topic: "${mqtt_prefix}/chargecurrentlimit/set"
+
+    network_mode:
+      name: "network_mode"
+      id: network_mode_id_0
+      #internal: true
+      state_topic: "${mqtt_prefix}/networkmodecmd"
+      command_topic: "${mqtt_prefix}/networkmodecmd/set"
+
+interval:
+  - interval: 2s
+    then: 
+      - lambda: |-
+          // Set MPPT max bat charging current over 85A
+          float max_bat_curr_set = 85.0;
+          float inv_out_48v_curr = id(last_inv_value) / id(battery_voltage).state;
+          float inv_pv_48v_curr = id(last_pv_value) / id(battery_voltage).state;
+          float batt_chrg_curr = id(main_battery_current).state; //id(jkbms_charge_curr).state;
+          float mppt_max_curr = std::max(0.0f, static_cast<float>(std::round((inv_out_48v_curr + max_bat_curr_set - inv_pv_48v_curr) * 10) / 10.0));
+          //ESP_LOGI("main", "MQTT max curr set: INVOUT: %.2f , INVPV: %.2f , BATT: %.2f , LIMIT: %.2f", inv_out_48v_curr, inv_pv_48v_curr, batt_chrg_curr, mppt_max_curr);
+
+          auto number = id(charge_current_limit);
+          if (number) {
+              if (mppt_max_curr != id(last_mppt_max_curr) && mppt_max_curr <= 100.0) {
+                number->control(mppt_max_curr + 3.0);
+                id(last_mppt_max_curr) = mppt_max_curr;
+                if (max_bat_curr_set < batt_chrg_curr)
+                  ESP_LOGI("main", "Batt overcurrent [%.1f of %.0f A] protection ON => %.1fA.", batt_chrg_curr, max_bat_curr_set, mppt_max_curr);
+                else 
+                  ESP_LOGI("main", "Batt overcurrent [%.1f of %.0f A] normal state => %.1fA.", batt_chrg_curr, max_bat_curr_set, mppt_max_curr);
+              } else if (mppt_max_curr > 100.0 && id(last_mppt_max_curr) != 100.0) {
+                number->control(100.0);
+                id(last_mppt_max_curr) = 100.0;
+                  ESP_LOGI("main", "Batt overcurrent protection NO NEED => 100A default.");
+              }
+          }
+  - interval: 5s
+    then:
+      - lambda: |-
+          int now = millis();
+          bool inv_recent = (now - id(last_update_inv)) < (10 * 1000); // 10s timeout
+          bool pv_recent = (now - id(last_update_pv)) < (10 * 1000);  // 10s timeout
+          bool chrgcurr_recent = (now - id(last_update_batt_chrgcurr)) < (10 * 1000);  // 10s timeout
+          //ESP_LOGI("main", "MQTT update check: %d, %d, %d, %d", inv_recent, pv_recent, chrgcurr_recent, static_cast<int>(id(charge_current_limit_value)));
+          if (!inv_recent || !pv_recent || !chrgcurr_recent) {
+            // At least one of sensors have timed out, apply fallback
+            auto number = id(charge_current_limit);
+            if (number) {
+                number->control(id(charge_current_limit_value));
+                ESP_LOGW("main", "No MQTT updates received, set current save limit to fallback: 30.0");
+            }
+          }
+
+  # Periodically set the "network_mode" to 5, only if its current value is 5
+  - interval: 30s
+    then:
+      - lambda: |-
+          auto number = id(network_mode_id_0);
+          if (number) {
+              number->control(5);  // Keep network mode at 5
+              ESP_LOGI("main", "Network Mode set to 5 periodically.");
+          }
+
+# Periodically publish discovery messages every 10 minutes
+  - interval: 10min
+    then:
+      - script.execute: publish_homeassistant_discovery
+
+# HA button for restart
+button:
+  - platform: restart
+    id: restart_button
+    name: "Restart ESP"
+
+# Scripts ...
+script:
+  - id: publish_homeassistant_discovery
+    then:
+      - logger.log: "Publishing discovery messages..."
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_tac}/actualvoltage/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensoractualvoltage",
+              "name": "Actual Voltage",
+              "stat_t": "${tac_prefix}/actualvoltage",
+              "unit_of_meas": "V",
+              "device": {
+                "ids": "TAC1100SN001",
+                "name": "${name_tac_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }      
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_tac}/actualcurrent/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensoractualcurrent",
+              "name": "Actual Current",
+              "stat_t": "${tac_prefix}/actualcurrent",
+              "unit_of_meas": "A",
+              "device": {
+                "ids": "TAC1100SN001",
+                "name": "${name_tac_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_tac}/activepower/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensoractivepower",
+              "name": "Active Power",
+              "stat_t": "${tac_prefix}/activepower",
+              "unit_of_meas": "W",
+              "device": {
+                "ids": "TAC1100SN001",
+                "name": "${name_tac_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }
+
+      # Victron SmartShunt
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_shunt}/mainbatteryvoltage/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensormainbatteryvoltage",
+              "name": "Main Battery Voltage",
+              "stat_t": "${shunt_prefix}/mainbatteryvoltage",
+              "unit_of_meas": "V",
+              "device": {
+                "ids": "VictronSmartShunt",
+                "name": "${name_shunt_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_shunt}/mainbatterycurrent/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensormainbatterycurrent",
+              "name": "Main Battery Current",
+              "stat_t": "${shunt_prefix}/mainbatterycurrent",
+              "unit_of_meas": "A",
+              "device": {
+                "ids": "VictronSmartShunt",
+                "name": "${name_shunt_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }                    
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_shunt}/mainbatterypower/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensormainbatterypower",
+              "name": "Main Battery Power",
+              "stat_t": "${shunt_prefix}/mainbatterypower",
+              "unit_of_meas": "W",
+              "device": {
+                "ids": "VictronSmartShunt",
+                "name": "${name_shunt_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }                    
+      - mqtt.publish:
+          topic: "homeassistant/sensor/${name_shunt}/mainbatterysoc/config"
+          retain: True
+          payload: >-
+            {
+              "uniq_id": "ESPsensormainbatterysoc",
+              "name": "Main Battery SOC",
+              "stat_t": "${shunt_prefix}/mainbatterysoc",
+              "unit_of_meas": "%",
+              "device": {
+                "ids": "VictronSmartShunt",
+                "name": "${name_shunt_friendly_name}",
+                "manufacturer": "Espressif",
+                "model": "esp-wrover-kit"
+              }
+            }                    
+  - id: watchdog
+    mode: restart
+    then:
+      - delay: 30min
+      - button.press: restart_button
