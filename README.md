@@ -154,7 +154,7 @@ number:
 
 - Limit charging current based on solar production
 - Integrate Victron into Home Assistant automations
-- Dynamic battery control (FVE)
+- Dynamic battery charge control
 
 ---
 
