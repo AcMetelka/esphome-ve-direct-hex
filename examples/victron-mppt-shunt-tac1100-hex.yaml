@@ -1,3 +1,70 @@
+# ============================================================
+# Victron VE.Direct HEX – Full Example (MPPT + SmartShunt + Meter)
+# ============================================================
+#
+# This configuration demonstrates a complete ESPHome setup for:
+#
+# 🔋 Victron SmartSolar MPPT (via VE.Direct HEX over UART)
+# 🔋 Victron SmartShunt (via VE.Direct HEX over UART)
+# ⚡ TAC1100 energy meter (via Modbus RTU)
+#
+# ------------------------------------------------------------
+# 🚀 What this setup does
+# ------------------------------------------------------------
+#
+# 1) READ data from Victron devices:
+# - MPPT: PV voltage/current/power, battery voltage/current, state
+# - SmartShunt: battery voltage, current, power, SOC
+#
+# 2) WRITE / CONTROL Victron MPPT:
+# - Uses ESPHome `number` entities
+# - Example: dynamically sets charge current limit
+#
+# 3) MQTT integration:
+# - Publishes all values to MQTT topics
+# - Sends Home Assistant discovery messages
+#
+# 4) Smart energy control logic:
+# - Calculates battery charge current based on:
+# - inverter output power
+# - PV power
+# - battery current
+# - Automatically adjusts MPPT charge current limit
+# - Includes fallback safety if MQTT data is missing
+#
+# 5) Multi-UART setup:
+# - UART1 → MPPT
+# - UART2 → SmartShunt
+# - UART3 → Modbus (TAC1100)
+#
+# ------------------------------------------------------------
+# 🔌 Hardware wiring (VE.Direct)
+# ------------------------------------------------------------
+#
+# Victron → ESP32:
+# TX (yellow) → RX pin
+# RX (blue)   → TX pin  ⚠ required for control!
+# GND (black) → GND
+#
+# Baudrate: 19200
+#
+# ⚠ Important:
+# - Logger UART is disabled (baud_rate: 0)
+# - Some VE.Direct cables are read-only (no RX wire)
+#
+# ------------------------------------------------------------
+# 💡 Notes
+# ------------------------------------------------------------
+#
+# - This is a real production configuration (not minimal example)
+# - Includes advanced logic for FVE (solar system) optimization
+# - Uses MQTT as integration layer with Home Assistant
+#
+# For a minimal example, see README.md
+#
+# ============================================================
+
+
 substitutions:
   name: fve-victron-mppt-vjv
   friendly_name: FVE Victron MPPT VJV
