@@ -32,7 +32,7 @@ Custom ESPHome component for communication with Victron devices (MPPT, SmartShun
 
 ```yaml
 external_components:
-  - source: github://YOUR_USERNAME/ve_direct_hex_esphome
+  - source: github://AcMetelka/ve_direct_hex_esphome
 ```
 
 ---
@@ -89,7 +89,7 @@ uart:
   baud_rate: 19200
 
 external_components:
-  - source: github://YOUR_USERNAME/ve_direct_hex_esphome
+  - source: github://AcMetelka/ve_direct_hex_esphome
 
 ve_direct_hex:
   id: victron
